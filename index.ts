@@ -42,6 +42,7 @@ interface Customer {
     status: Set<'seen' | 'identified' | 'with_email'>
     existsAlready: boolean
     email: string | null
+    uuid: string | null
 }
 
 async function callCustomerIoApi(
@@ -152,18 +153,19 @@ async function syncCustomerMetadata(event: ProcessedPluginEvent, storage: Storag
     const customerStatusArray = (await storage.get(customerStatusKey, [])) as string[]
     const customerStatus = new Set(customerStatusArray) as Customer['status']
     const customerExistsAlready = customerStatus.has('seen')
-    const email = getEmailFromEvent(event)
+    const customerIdentity = getUserIdentityFromEvent(event)
 
-    console.debug(email)
+    console.debug(`Customer Identity: ${customerIdentity}`)
 
     // Update customer status
     customerStatus.add('seen')
     if (event.event === '$identify') {
         customerStatus.add('identified')
     }
-    if (email) {
+    if (customerIdentity.email) {
         customerStatus.add('with_email')
     }
+    
 
     if (customerStatus.size > customerStatusArray.length) {
         await storage.set(customerStatusKey, Array.from(customerStatus))
@@ -172,7 +174,8 @@ async function syncCustomerMetadata(event: ProcessedPluginEvent, storage: Storag
     return {
         status: customerStatus,
         existsAlready: customerExistsAlready,
-        email
+        email: customerIdentity.email,
+        uuid: customerIdentity.uuid
     }
 }
 
@@ -214,7 +217,12 @@ async function exportSingleEvent(
         customerPayload.created_at = Date.parse(customerPayload.created_at) / 1000
     }
 
-    let id = event.distinct_id
+    let id = customer.uuid
+
+    if(identifyByEmail && customer.email) {
+        customerPayload.email = customer.email
+        id = customer.email
+    }
 
     if (customer.email) {
         customerPayload.email = customer.email
@@ -246,6 +254,7 @@ function isEmail(email: string): boolean {
     return re.test(email.toLowerCase())
 }
 
+//Leaving this one to not break compatibility
 function getEmailFromEvent(event: ProcessedPluginEvent): string | null {
     const setAttribute = event.$set
     if (typeof setAttribute !== 'object' || !setAttribute['email']) {
@@ -260,4 +269,19 @@ function getEmailFromEvent(event: ProcessedPluginEvent): string | null {
         return event.distinct_id
     }
     return null
+}
+
+interface UserIdentity {
+    email: string | null
+    uuid: string | null
+}
+
+//This will be called if there is no email present, in which case the preferred method will still be to use email
+function getUserIdentityFromEvent(event: ProcessedPluginEvent): UserIdentity {
+    const setAttributes = event.$set || {};
+    
+    const email = getEmailFromEvent(event) ? String(getEmailFromEvent) : null
+    const uuid = setAttributes.userId ? String(setAttributes.userId) : null
+
+    return {email, uuid}
 }
